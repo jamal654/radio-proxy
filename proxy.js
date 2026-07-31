@@ -3,50 +3,69 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Inserisci l'URL del tuo stream laut.fm
-const STREAM_URL = process.env.STREAM_URL || 'https://radio-m100.stream.laut.fm/radio-m100';
+// Elenco delle stazioni: chiave → URL stream
+const streams = {
+  'radio-m100': 'https://radio-m100.stream.laut.fm/radio-m100',
+  'radio-m100next': 'https://stream.laut.fm/m100next'   // il tuo URL confermato
+};
 
-let currentMeta = { artist: '', title: '', raw: '' };
+// Oggetto per conservare i metadati di ogni stazione
+const stationsMeta = {};
 
-function connectToStream() {
-  console.log('Connessione allo stream...');
-  icy.get(STREAM_URL, (res) => {
-    res.on('metadata', (metadata) => {
-      const parsed = icy.parse(metadata);
-      const raw = parsed.StreamTitle || '';
-      currentMeta.raw = raw;
-      const dashIndex = raw.indexOf(' - ');
-      if (dashIndex > 0) {
-        currentMeta.artist = raw.substring(0, dashIndex).trim();
-        currentMeta.title = raw.substring(dashIndex + 3).trim();
-      } else {
-        currentMeta.artist = '';
-        currentMeta.title = raw.trim();
-      }
-      console.log('Meta aggiornato:', currentMeta);
+// Avvia una connessione ICY per ciascuna stazione
+Object.entries(streams).forEach(([name, url]) => {
+  stationsMeta[name] = { artist: '', title: '', raw: '' };
+
+  function connect() {
+    console.log(`[${name}] Connessione a ${url}...`);
+    icy.get(url, (res) => {
+      res.on('metadata', (metadata) => {
+        const parsed = icy.parse(metadata);
+        const raw = parsed.StreamTitle || '';
+        const dashIndex = raw.indexOf(' - ');
+        if (dashIndex > 0) {
+          stationsMeta[name].artist = raw.substring(0, dashIndex).trim();
+          stationsMeta[name].title = raw.substring(dashIndex + 3).trim();
+        } else {
+          stationsMeta[name].artist = '';
+          stationsMeta[name].title = raw.trim();
+        }
+        stationsMeta[name].raw = raw;
+        console.log(`[${name}] Meta aggiornato:`, stationsMeta[name]);
+      });
+
+      res.on('end', () => {
+        console.log(`[${name}] Connessione persa, riconnessione tra 5s...`);
+        setTimeout(connect, 5000);
+      });
+
+      res.on('error', (err) => {
+        console.error(`[${name}] Errore:`, err);
+        setTimeout(connect, 5000);
+      });
+
+      res.resume();
     });
+  }
 
-    res.on('end', () => {
-      console.log('Connessione persa, riconnessione tra 5 secondi...');
-      setTimeout(connectToStream, 5000);
-    });
+  connect();
+});
 
-    res.on('error', (err) => {
-      console.error('Errore:', err);
-      setTimeout(connectToStream, 5000);
-    });
-
-    // Importante: consumare i dati audio per non intasare la memoria
-    res.resume();
-  });
-}
-
-app.get('/current-meta', (req, res) => {
+// Endpoint per ottenere i metadati di una stazione specifica
+app.get('/current-meta/:station', (req, res) => {
+  const { station } = req.params;
+  if (!stationsMeta[station]) {
+    return res.status(404).json({ error: 'Stazione non trovata' });
+  }
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.json(currentMeta);
+  res.json(stationsMeta[station]);
+});
+
+// Health check
+app.get('/', (req, res) => {
+  res.send('Proxy metadati multi-stazione attivo. Usa /current-meta/radio-m100 o /current-meta/radio-m100next');
 });
 
 app.listen(PORT, () => {
-  console.log(`Proxy metadati in ascolto sulla porta ${PORT}`);
-  connectToStream();
+  console.log(`Proxy in ascolto sulla porta ${PORT} per le stazioni:`, Object.keys(streams).join(', '));
 });
