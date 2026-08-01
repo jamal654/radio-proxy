@@ -3,6 +3,7 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Entrambe le stazioni
 const streams = {
   'radio-m100': 'https://radio-m100.stream.laut.fm/radio-m100',
   'radio-m100next': 'https://stream.laut.fm/m100next'
@@ -56,12 +57,6 @@ app.get('/current-meta/:station', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.json(stationsMeta[station]);
 });
-
-// Auto‑ping per evitare lo standby di Render (ogni 10 minuti)
-setInterval(() => {
-  console.log('Auto‑ping per keep‑alive');
-  require('http').get(`http://localhost:${PORT}/`, () => {});
-}, 600000);
 
 app.get('/', (req, res) => {
   res.send('Proxy attivo');
