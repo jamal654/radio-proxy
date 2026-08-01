@@ -3,13 +3,28 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Entrambe le stazioni
 const streams = {
   'radio-m100': 'https://radio-m100.stream.laut.fm/radio-m100',
   'radio-m100next': 'https://m100next.stream.laut.fm/m100next'
 };
 
 const stationsMeta = {};
+
+// Lista di parole da filtrare (case‑insensitive)
+const BLOCKED_KEYWORDS = [
+  'aktion-mensch',
+  'verbraucherinformation',
+  'information',
+  'verbraucher',
+  'spot pubblicitario',
+  'pubblicit\u00e0',
+  'advertising'
+];
+
+function isBlocked(rawTitle) {
+  const lower = rawTitle.toLowerCase();
+  return BLOCKED_KEYWORDS.some(keyword => lower.includes(keyword));
+}
 
 Object.entries(streams).forEach(([name, url]) => {
   stationsMeta[name] = { artist: '', title: '', raw: '' };
@@ -20,6 +35,13 @@ Object.entries(streams).forEach(([name, url]) => {
       res.on('metadata', (metadata) => {
         const parsed = icy.parse(metadata);
         const raw = parsed.StreamTitle || '';
+
+        // Se il titolo contiene parole bloccate, ignoralo e mantieni i metadati precedenti
+        if (isBlocked(raw)) {
+          console.log(`[${name}] Metadato bloccato: "${raw}"`);
+          return;
+        }
+
         const dashIndex = raw.indexOf(' - ');
         if (dashIndex > 0) {
           stationsMeta[name].artist = raw.substring(0, dashIndex).trim();
