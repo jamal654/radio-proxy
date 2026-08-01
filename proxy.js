@@ -17,7 +17,7 @@ const BLOCKED_KEYWORDS = [
   'information',
   'verbraucher',
   'spot pubblicitario',
-  'pubblicit\u00e0',
+  'pubblicità',
   'advertising'
 ];
 
@@ -32,11 +32,14 @@ Object.entries(streams).forEach(([name, url]) => {
   function connect() {
     console.log(`[${name}] Connessione a ${url}...`);
     icy.get(url, (res) => {
+      // Scarta i dati audio per non intasare la memoria
+      res.on('data', () => {});
+
       res.on('metadata', (metadata) => {
         const parsed = icy.parse(metadata);
         const raw = parsed.StreamTitle || '';
 
-        // Se il titolo contiene parole bloccate, ignoralo e mantieni i metadati precedenti
+        // Filtra i metadati indesiderati
         if (isBlocked(raw)) {
           console.log(`[${name}] Metadato bloccato: "${raw}"`);
           return;
@@ -63,8 +66,6 @@ Object.entries(streams).forEach(([name, url]) => {
         console.error(`[${name}] Errore:`, err);
         setTimeout(connect, 5000);
       });
-
-      res.resume();
     });
   }
 
