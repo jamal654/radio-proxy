@@ -3,13 +3,14 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Stazioni
 const streams = {
   'radio-m100': 'https://radio-m100.stream.laut.fm/radio-m100',
-  'radio-m100next': 'https://stream.laut.fm/m100next'
+  'radio-m100next': 'https://m100next.stream.laut.fm/m100next'
 };
 
 const stationsMeta = {};
-const connections = {};   // tiene traccia delle connessioni attive
+const connections = {};
 
 Object.entries(streams).forEach(([name, url]) => {
   stationsMeta[name] = { artist: '', title: '', raw: '' };
@@ -20,10 +21,12 @@ Object.entries(streams).forEach(([name, url]) => {
     }
     console.log(`[${name}] Connessione a ${url} (tentativo ${retryCount})...`);
     
-    const req = icy.get(url, (res) => {
+    const req = icy.get(url, {
+      headers: { 'icy-metadata': '1' }
+    }, (res) => {
       connections[name] = res;
       console.log(`[${name}] Connesso.`);
-      
+
       res.on('metadata', (metadata) => {
         const parsed = icy.parse(metadata);
         const raw = parsed.StreamTitle || '';
@@ -36,29 +39,28 @@ Object.entries(streams).forEach(([name, url]) => {
           stationsMeta[name].title = raw.trim();
         }
         stationsMeta[name].raw = raw;
-        console.log(`[${name}] Meta aggiornato:`, stationsMeta[name]);
+        console.log(`[${name}] Nuovo brano: ${stationsMeta[name].artist} - ${stationsMeta[name].title}`);
       });
 
       res.on('end', () => {
-        console.log(`[${name}] Connessione chiusa, riconnessione tra 5s...`);
+        console.log(`[${name}] Connessione chiusa, riconnessione immediata...`);
         connections[name] = null;
-        setTimeout(() => connect(0), 5000);
+        connect(0);
       });
 
       res.on('error', (err) => {
-        console.error(`[${name}] Errore:`, err);
+        console.error(`[${name}] Errore nello stream:`, err);
         connections[name] = null;
-        const delay = Math.min(5000 * Math.pow(2, retryCount), 60000); // backoff fino a 1 min
+        const delay = Math.min(2000 * Math.pow(2, retryCount), 30000);
         setTimeout(() => connect(retryCount + 1), delay);
       });
 
-      // Consuma i dati
       res.resume();
     });
 
     req.on('error', (err) => {
-      console.error(`[${name}] Errore richiesta:`, err);
-      const delay = Math.min(5000 * Math.pow(2, retryCount), 60000);
+      console.error(`[${name}] Errore di richiesta:`, err);
+      const delay = Math.min(2000 * Math.pow(2, retryCount), 30000);
       setTimeout(() => connect(retryCount + 1), delay);
     });
   }
@@ -66,7 +68,7 @@ Object.entries(streams).forEach(([name, url]) => {
   connect();
 });
 
-// Endpoint metadati
+// Metadati
 app.get('/current-meta/:station', (req, res) => {
   const { station } = req.params;
   if (!stationsMeta[station]) {
@@ -76,31 +78,23 @@ app.get('/current-meta/:station', (req, res) => {
   res.json(stationsMeta[station]);
 });
 
-// Health check avanzato
+// Health check (verifica connessioni attive)
 app.get('/health', (req, res) => {
   const statuses = {};
-  let allConnected = true;
+  let allOk = true;
   Object.keys(streams).forEach(name => {
     const connected = connections[name] && !connections[name].destroyed;
     statuses[name] = connected ? 'connected' : 'disconnected';
-    if (!connected) allConnected = false;
+    if (!connected) allOk = false;
   });
-  res.status(allConnected ? 200 : 503).json({
-    status: allConnected ? 'ok' : 'degraded',
+  res.status(allOk ? 200 : 503).json({
+    status: allOk ? 'ok' : 'degraded',
     stations: statuses
   });
 });
 
-// Auto-ping ogni 10 minuti per evitare standby (anche senza UptimeRobot)
-setInterval(() => {
-  console.log('Auto-ping per keep-alive');
-  // fa una richiesta a se stesso (localhost)
-  const http = require('http');
-  http.get(`http://localhost:${PORT}/health`, (resp) => {});
-}, 600000); // 10 minuti
-
 app.get('/', (req, res) => {
-  res.send('Proxy multi-stazione attivo. Usa /current-meta/radio-m100 o /health');
+  res.send('Proxy attivo. /current-meta/radio-m100 - /health');
 });
 
 app.listen(PORT, () => {
