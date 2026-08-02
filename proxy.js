@@ -32,7 +32,7 @@ Object.entries(streams).forEach(([name, url]) => {
   function connect() {
     console.log(`[${name}] Connessione a ${url}...`);
     icy.get(url, (res) => {
-      // Scarta i dati audio per non intasare la memoria
+      // Consuma i dati audio per non intasare la memoria
       res.on('data', () => {});
 
       res.on('metadata', (metadata) => {
@@ -66,6 +66,8 @@ Object.entries(streams).forEach(([name, url]) => {
         console.error(`[${name}] Errore:`, err);
         setTimeout(connect, 5000);
       });
+
+      // NOTA: NON usare res.resume() !!!
     });
   }
 
