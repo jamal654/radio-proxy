@@ -10,9 +10,8 @@ const streams = {
 
 const stationsMeta = {};
 const lastRaw = {};
-const cache = {};
-const CACHE_TTL = 2000;
 
+// Filtro pubblicità
 const BLOCKED_KEYWORDS = [
   'aktion-mensch',
   'verbraucherinformation',
@@ -33,19 +32,13 @@ const MAX_BUFFER = 262144; // 256 KB
 Object.entries(streams).forEach(([name, url]) => {
   stationsMeta[name] = { artist: '', title: '', raw: '' };
   lastRaw[name] = '';
-  cache[name] = { data: null, timestamp: 0 };
 
   let currentConnection = null;
   let reconnectTimeout = null;
-  let dataListener = null;
   let bufferSize = 0;
   let metadataTimer = null;
 
   function cleanup() {
-    if (dataListener && currentConnection) {
-      currentConnection.removeListener('data', dataListener);
-      dataListener = null;
-    }
     if (metadataTimer) clearTimeout(metadataTimer);
     if (currentConnection) {
       try { currentConnection.destroy(); } catch (e) {}
@@ -62,7 +55,8 @@ Object.entries(streams).forEach(([name, url]) => {
     const req = icy.get(url, (res) => {
       currentConnection = res;
 
-      dataListener = (chunk) => {
+      // Consuma i dati audio
+      res.on('data', (chunk) => {
         bufferSize += chunk.length;
         if (bufferSize > MAX_BUFFER) {
           bufferSize = 0;
@@ -71,10 +65,9 @@ Object.entries(streams).forEach(([name, url]) => {
             if (currentConnection === res) res.resume();
           });
         }
-      };
-      res.on('data', dataListener);
+      });
 
-      // Timeout metadati: si resetta OGNI volta che arriva un blocco (anche scartato)
+      // Timeout metadati: si resetta OGNI volta che arriva un blocco
       metadataTimer = setTimeout(() => {
         console.log(`[${name}] Nessun metadato da 60s, riconnessione...`);
         cleanup();
@@ -82,7 +75,7 @@ Object.entries(streams).forEach(([name, url]) => {
       }, 60000);
 
       res.on('metadata', (metadata) => {
-        // Reset del timer immediato (prima di qualsiasi controllo)
+        // Reset del timer
         clearTimeout(metadataTimer);
         metadataTimer = setTimeout(() => {
           console.log(`[${name}] Nessun metadato da 60s, riconnessione...`);
@@ -93,14 +86,17 @@ Object.entries(streams).forEach(([name, url]) => {
         const parsed = icy.parse(metadata);
         const raw = parsed.StreamTitle || '';
 
+        // Salta se è lo stesso titolo di prima
         if (raw === lastRaw[name]) return;
         lastRaw[name] = raw;
 
+        // Se è bloccato, non aggiornare
         if (isBlocked(raw)) {
           console.log(`[${name}] Metadato bloccato: "${raw}"`);
           return;
         }
 
+        // Estrai artista e titolo
         const dashIndex = raw.indexOf(' - ');
         if (dashIndex > 0) {
           stationsMeta[name].artist = raw.substring(0, dashIndex).trim();
@@ -110,7 +106,7 @@ Object.entries(streams).forEach(([name, url]) => {
           stationsMeta[name].title = raw.trim();
         }
         stationsMeta[name].raw = raw;
-        cache[name].timestamp = 0;
+
         console.log(`[${name}] Meta: ${stationsMeta[name].artist} - ${stationsMeta[name].title}`);
       });
 
@@ -137,22 +133,12 @@ Object.entries(streams).forEach(([name, url]) => {
   connect();
 });
 
+// Endpoint metadati (senza cache, per evitare ritardi)
 app.get('/current-meta/:station', (req, res) => {
   const { station } = req.params;
   if (!stationsMeta[station]) {
     return res.status(404).json({ error: 'Stazione non trovata' });
   }
-
-  const now = Date.now();
-  const cached = cache[station];
-
-  if (cached && cached.data && (now - cached.timestamp) < CACHE_TTL) {
-    return res.json(cached.data);
-  }
-
-  cached.data = { ...stationsMeta[station] };
-  cached.timestamp = now;
-
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.json(stationsMeta[station]);
 });
@@ -165,6 +151,7 @@ app.get('/', (req, res) => res.send('Proxy attivo'));
 
 app.listen(PORT, () => console.log(`Proxy sulla porta ${PORT}`));
 
+// GC forzata ogni 3 ore
 setInterval(() => {
   console.log('GC forzata');
   if (global.gc) global.gc();
