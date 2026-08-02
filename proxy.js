@@ -11,7 +11,7 @@ const streams = {
 const stationsMeta = {};
 const lastRaw = {};
 
-// Ritardo di pubblicazione (10 secondi)
+// Ritardo di pubblicazione (8 secondi)
 const METADATA_DELAY = 8000;
 
 function isValidMetadata(rawTitle) {
