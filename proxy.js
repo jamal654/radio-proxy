@@ -11,20 +11,40 @@ const streams = {
 const stationsMeta = {};
 const lastRaw = {};
 
-// Filtro pubblicità
-const BLOCKED_KEYWORDS = [
-  'aktion-mensch',
-  'verbraucherinformation',
-  'information',
-  'verbraucher',
-  'spot pubblicitario',
-  'pubblicità',
-  'advertising'
-];
+/**
+ * Verifica se un metadato ha un formato valido "Artista - Titolo".
+ * Scarta automaticamente URL, domini, pubblicità e frasi promozionali.
+ */
+function isValidMetadata(rawTitle) {
+  if (!rawTitle || rawTitle.trim() === '') return false;
 
-function isBlocked(rawTitle) {
-  const lower = rawTitle.toLowerCase();
-  return BLOCKED_KEYWORDS.some(keyword => lower.includes(keyword));
+  // Deve contenere esattamente un trattino separatore " - "
+  const dashIndex = rawTitle.indexOf(' - ');
+  if (dashIndex === -1) return false;
+
+  // Non ci devono essere altri trattini dopo il primo
+  if (rawTitle.indexOf(' - ', dashIndex + 1) !== -1) return false;
+
+  const artist = rawTitle.substring(0, dashIndex).trim();
+  const title = rawTitle.substring(dashIndex + 3).trim();
+
+  // Artista e titolo devono essere non vuoti
+  if (!artist || !title) return false;
+
+  // L'artista non deve essere un dominio (contenere un punto)
+  if (artist.includes('.')) return false;
+
+  // Il titolo non deve contenere parole pubblicitarie
+  const blockedWords = [
+    'verbraucherinformation', 'gewinnspiel', 'lotterie', 'werbung',
+    'anzeige', 'gratis', 'kostenlos', 'aktion', 'teilnahmebedingungen',
+    'datenschutz', 'widerrufsrecht', 'impressum', 'sponsorizzato',
+    'pubblicità', 'advertising', 'information'
+  ];
+  const lowerTitle = title.toLowerCase();
+  if (blockedWords.some(word => lowerTitle.includes(word))) return false;
+
+  return true;
 }
 
 const MAX_BUFFER = 262144; // 256 KB
@@ -90,21 +110,16 @@ Object.entries(streams).forEach(([name, url]) => {
         if (raw === lastRaw[name]) return;
         lastRaw[name] = raw;
 
-        // Se è bloccato, non aggiornare
-        if (isBlocked(raw)) {
-          console.log(`[${name}] Metadato bloccato: "${raw}"`);
+        // Accetta solo metadati con formato valido "Artista - Titolo"
+        if (!isValidMetadata(raw)) {
+          console.log(`[${name}] Metadato scartato: "${raw}"`);
           return;
         }
 
         // Estrai artista e titolo
         const dashIndex = raw.indexOf(' - ');
-        if (dashIndex > 0) {
-          stationsMeta[name].artist = raw.substring(0, dashIndex).trim();
-          stationsMeta[name].title = raw.substring(dashIndex + 3).trim();
-        } else {
-          stationsMeta[name].artist = '';
-          stationsMeta[name].title = raw.trim();
-        }
+        stationsMeta[name].artist = raw.substring(0, dashIndex).trim();
+        stationsMeta[name].title = raw.substring(dashIndex + 3).trim();
         stationsMeta[name].raw = raw;
 
         console.log(`[${name}] Meta: ${stationsMeta[name].artist} - ${stationsMeta[name].title}`);
