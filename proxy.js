@@ -12,7 +12,7 @@ const stationsMeta = {};
 const lastRaw = {};
 
 // Ritardo di pubblicazione (10 secondi)
-const METADATA_DELAY = 10000;
+const METADATA_DELAY = 8000;
 
 function isValidMetadata(rawTitle) {
   if (!rawTitle || rawTitle.trim() === '') return false;
