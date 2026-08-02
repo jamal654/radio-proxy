@@ -9,8 +9,10 @@ const streams = {
 };
 
 const stationsMeta = {};
+const lastRaw = {};
+const cache = {};
+const CACHE_TTL = 2000;
 
-// Filtro pubblicità
 const BLOCKED_KEYWORDS = [
   'aktion-mensch',
   'verbraucherinformation',
@@ -26,46 +28,73 @@ function isBlocked(rawTitle) {
   return BLOCKED_KEYWORDS.some(keyword => lower.includes(keyword));
 }
 
+const MAX_BUFFER = 262144; // 256 KB
+
 Object.entries(streams).forEach(([name, url]) => {
   stationsMeta[name] = { artist: '', title: '', raw: '' };
+  lastRaw[name] = '';
+  cache[name] = { data: null, timestamp: 0 };
 
-  // Stato della connessione
   let currentConnection = null;
   let reconnectTimeout = null;
   let dataListener = null;
+  let bufferSize = 0;
+  let metadataTimer = null;
 
-  function cleanupConnection() {
+  function cleanup() {
     if (dataListener && currentConnection) {
       currentConnection.removeListener('data', dataListener);
       dataListener = null;
     }
+    if (metadataTimer) clearTimeout(metadataTimer);
     if (currentConnection) {
-      try {
-        currentConnection.destroy();
-      } catch (e) {
-        // già distrutto
-      }
+      try { currentConnection.destroy(); } catch (e) {}
       currentConnection = null;
     }
+    if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    bufferSize = 0;
   }
 
   function connect(retryCount = 0) {
-    // Pulisci eventuali connessioni precedenti
-    cleanupConnection();
-    if (reconnectTimeout) clearTimeout(reconnectTimeout);
-
+    cleanup();
     console.log(`[${name}] Connessione a ${url} (tentativo ${retryCount})...`);
 
     const req = icy.get(url, (res) => {
       currentConnection = res;
 
-      // Consuma esplicitamente i dati audio
-      dataListener = () => {};
+      dataListener = (chunk) => {
+        bufferSize += chunk.length;
+        if (bufferSize > MAX_BUFFER) {
+          bufferSize = 0;
+          res.pause();
+          setImmediate(() => {
+            if (currentConnection === res) res.resume();
+          });
+        }
+      };
       res.on('data', dataListener);
 
+      // Timeout metadati: si resetta OGNI volta che arriva un blocco (anche scartato)
+      metadataTimer = setTimeout(() => {
+        console.log(`[${name}] Nessun metadato da 60s, riconnessione...`);
+        cleanup();
+        connect(0);
+      }, 60000);
+
       res.on('metadata', (metadata) => {
+        // Reset del timer immediato (prima di qualsiasi controllo)
+        clearTimeout(metadataTimer);
+        metadataTimer = setTimeout(() => {
+          console.log(`[${name}] Nessun metadato da 60s, riconnessione...`);
+          cleanup();
+          connect(0);
+        }, 60000);
+
         const parsed = icy.parse(metadata);
         const raw = parsed.StreamTitle || '';
+
+        if (raw === lastRaw[name]) return;
+        lastRaw[name] = raw;
 
         if (isBlocked(raw)) {
           console.log(`[${name}] Metadato bloccato: "${raw}"`);
@@ -81,74 +110,62 @@ Object.entries(streams).forEach(([name, url]) => {
           stationsMeta[name].title = raw.trim();
         }
         stationsMeta[name].raw = raw;
-        console.log(`[${name}] Meta aggiornato:`, stationsMeta[name]);
+        cache[name].timestamp = 0;
+        console.log(`[${name}] Meta: ${stationsMeta[name].artist} - ${stationsMeta[name].title}`);
       });
 
       res.on('end', () => {
-        console.log(`[${name}] Connessione chiusa dal server.`);
-        cleanupConnection();
-        // Riconnetti dopo 2 secondi, ma con backoff limitato
-        const delay = Math.min(2000 * Math.pow(1.5, retryCount), 15000);
-        reconnectTimeout = setTimeout(() => connect(retryCount + 1), delay);
+        console.log(`[${name}] Connessione chiusa.`);
+        cleanup();
+        reconnectTimeout = setTimeout(() => connect(retryCount + 1), 2000);
       });
 
       res.on('error', (err) => {
         console.error(`[${name}] Errore stream: ${err.message}`);
-        cleanupConnection();
-        const delay = Math.min(5000 * Math.pow(1.5, retryCount), 30000);
-        reconnectTimeout = setTimeout(() => connect(retryCount + 1), delay);
+        cleanup();
+        reconnectTimeout = setTimeout(() => connect(retryCount + 1), 5000);
       });
     });
 
     req.on('error', (err) => {
       console.error(`[${name}] Errore richiesta: ${err.message}`);
-      cleanupConnection();
-      const delay = Math.min(5000 * Math.pow(1.5, retryCount), 30000);
-      reconnectTimeout = setTimeout(() => connect(retryCount + 1), delay);
+      cleanup();
+      reconnectTimeout = setTimeout(() => connect(retryCount + 1), 10000);
     });
-
-    // Timeout di sicurezza: se dopo 30 secondi non ci sono metadati, forza la riconnessione
-    setTimeout(() => {
-      if (currentConnection && stationsMeta[name].raw === '') {
-        console.log(`[${name}] Nessun metadato dopo 30s, forzo riconnessione...`);
-        cleanupConnection();
-        connect(0);
-      }
-    }, 30000);
   }
 
   connect();
 });
 
-// Endpoint metadati
 app.get('/current-meta/:station', (req, res) => {
   const { station } = req.params;
   if (!stationsMeta[station]) {
     return res.status(404).json({ error: 'Stazione non trovata' });
   }
+
+  const now = Date.now();
+  const cached = cache[station];
+
+  if (cached && cached.data && (now - cached.timestamp) < CACHE_TTL) {
+    return res.json(cached.data);
+  }
+
+  cached.data = { ...stationsMeta[station] };
+  cached.timestamp = now;
+
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.json(stationsMeta[station]);
 });
 
-// Health check (opzionale, per monitorare lo stato)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', stations: Object.keys(stationsMeta) });
 });
 
-app.get('/', (req, res) => {
-  res.send('Proxy attivo');
-});
+app.get('/', (req, res) => res.send('Proxy attivo'));
 
-app.listen(PORT, () => {
-  console.log(`Proxy in ascolto sulla porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Proxy sulla porta ${PORT}`));
 
-// Pulizia periodica forzata (ogni 6 ore) – elimina eventuali risorse residue
 setInterval(() => {
-  console.log('Pulizia periodica: garbage collection forzata');
-  if (global.gc) {
-    global.gc();
-  } else {
-    console.log('gc non disponibile (avvia node con --expose-gc)');
-  }
-}, 21600000); // 6 ore
+  console.log('GC forzata');
+  if (global.gc) global.gc();
+}, 10800000);
