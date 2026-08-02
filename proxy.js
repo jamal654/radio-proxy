@@ -11,6 +11,9 @@ const streams = {
 const stationsMeta = {};
 const lastRaw = {};
 
+// Ritardo di pubblicazione (10 secondi)
+const METADATA_DELAY = 10000;
+
 function isValidMetadata(rawTitle) {
   if (!rawTitle || rawTitle.trim() === '') return false;
 
@@ -23,11 +26,10 @@ function isValidMetadata(rawTitle) {
 
   if (!artist || !title) return false;
 
-  // Controlla se l'artista contiene un dominio (es. fernsehlotterie.de)
+  // Controlla se l'artista contiene un dominio
   const domainPattern = /\.\w{2,4}(\/|$|\s)/;
   if (domainPattern.test(artist)) return false;
 
-  // Se l'artista inizia con "www." è un dominio
   if (artist.toLowerCase().startsWith('www.')) return false;
 
   // Controlla parole pubblicitarie nel titolo
@@ -54,14 +56,20 @@ Object.entries(streams).forEach(([name, url]) => {
   let bufferSize = 0;
   let metadataTimer = null;
 
+  // Variabili per il ritardo di pubblicazione
+  let pendingMeta = null;
+  let pendingTimer = null;
+
   function cleanup() {
     if (metadataTimer) clearTimeout(metadataTimer);
+    if (pendingTimer) clearTimeout(pendingTimer);
     if (currentConnection) {
       try { currentConnection.destroy(); } catch (e) {}
       currentConnection = null;
     }
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
     bufferSize = 0;
+    pendingMeta = null;
   }
 
   function connect(retryCount = 0) {
@@ -102,17 +110,30 @@ Object.entries(streams).forEach(([name, url]) => {
         if (raw === lastRaw[name]) return;
         lastRaw[name] = raw;
 
+        // Se è una pubblicità, ignoriamola e non facciamo nulla
         if (!isValidMetadata(raw)) {
           console.log(`[${name}] Metadato scartato: "${raw}"`);
           return;
         }
 
+        // È una canzone valida: mettila in attesa per 10 secondi
         const dashIndex = raw.indexOf(' - ');
-        stationsMeta[name].artist = raw.substring(0, dashIndex).trim();
-        stationsMeta[name].title = raw.substring(dashIndex + 3).trim();
-        stationsMeta[name].raw = raw;
+        const artist = raw.substring(0, dashIndex).trim();
+        const title = raw.substring(dashIndex + 3).trim();
 
-        console.log(`[${name}] Meta: ${stationsMeta[name].artist} - ${stationsMeta[name].title}`);
+        // Cancella il timer precedente (se c'è una canzone in attesa, viene sostituita)
+        if (pendingTimer) clearTimeout(pendingTimer);
+
+        pendingMeta = { artist, title, raw };
+
+        pendingTimer = setTimeout(() => {
+          // Dopo 10 secondi, se non è arrivata un'altra canzone valida, pubblica
+          if (pendingMeta) {
+            stationsMeta[name] = pendingMeta;
+            console.log(`[${name}] Meta pubblicato: ${pendingMeta.artist} - ${pendingMeta.title}`);
+            pendingMeta = null;
+          }
+        }, METADATA_DELAY);
       });
 
       res.on('end', () => {
