@@ -13,9 +13,10 @@ const lastRaw = {};
 
 // Ritardo di pubblicazione (8 secondi)
 const METADATA_DELAY = 8000;
-
 // Buffer massimo prima di forzare uno svuotamento (128 KB)
 const MAX_BUFFER = 131072;
+// Timeout senza metadati (2 minuti)
+const METADATA_TIMEOUT = 120000;
 
 /**
  * Verifica se un metadato ha un formato valido "Artista - Titolo".
@@ -24,17 +25,16 @@ const MAX_BUFFER = 131072;
 function isValidMetadata(rawTitle) {
   if (!rawTitle || rawTitle.trim() === '') return false;
 
-  // Deve contenere esattamente un trattino separatore " - "
-  const dashIndex = rawTitle.indexOf(' - ');
-  if (dashIndex === -1) return false;
-  if (rawTitle.indexOf(' - ', dashIndex + 1) !== -1) return false;
+  // Prende solo il primo " - " come separatore
+  const firstDash = rawTitle.indexOf(' - ');
+  if (firstDash === -1) return false;
 
-  const artist = rawTitle.substring(0, dashIndex).trim();
-  const title = rawTitle.substring(dashIndex + 3).trim();
+  const artist = rawTitle.substring(0, firstDash).trim();
+  const title = rawTitle.substring(firstDash + 3).trim();
 
   if (!artist || !title) return false;
 
-  // L'artista non deve essere un dominio (es. fernsehlotterie.de)
+  // L'artista non deve essere un dominio
   const domainPattern = /\.\w{2,4}(\/|$|\s)/;
   if (domainPattern.test(artist)) return false;
   if (artist.toLowerCase().startsWith('www.')) return false;
@@ -84,7 +84,6 @@ Object.entries(streams).forEach(([name, url]) => {
     const req = icy.get(url, (res) => {
       currentConnection = res;
 
-      // Consuma i dati audio e controlla il buffer
       res.on('data', (chunk) => {
         bufferSize += chunk.length;
         if (bufferSize > MAX_BUFFER) {
@@ -96,41 +95,37 @@ Object.entries(streams).forEach(([name, url]) => {
         }
       });
 
-      // Timeout metadati: 60 secondi senza metadati → riconnessione
+      // Timeout metadati (2 minuti)
       metadataTimer = setTimeout(() => {
-        console.log(`[${name}] Nessun metadato da 60s, riconnessione...`);
+        console.log(`[${name}] Nessun metadato da ${METADATA_TIMEOUT/1000}s, riconnessione...`);
         cleanup();
         connect(0);
-      }, 60000);
+      }, METADATA_TIMEOUT);
 
       res.on('metadata', (metadata) => {
-        // Reset del timer ogni volta che arriva un metadato (anche scartato)
+        // Resetta il timer a ogni metadato ricevuto
         clearTimeout(metadataTimer);
         metadataTimer = setTimeout(() => {
-          console.log(`[${name}] Nessun metadato da 60s, riconnessione...`);
+          console.log(`[${name}] Nessun metadato da ${METADATA_TIMEOUT/1000}s, riconnessione...`);
           cleanup();
           connect(0);
-        }, 60000);
+        }, METADATA_TIMEOUT);
 
         const parsed = icy.parse(metadata);
         const raw = parsed.StreamTitle || '';
 
-        // Salta se è lo stesso titolo di prima
         if (raw === lastRaw[name]) return;
         lastRaw[name] = raw;
 
-        // Scarta metadati non validi (pubblicità, domini, ecc.)
         if (!isValidMetadata(raw)) {
           console.log(`[${name}] Metadato scartato: "${raw}"`);
           return;
         }
 
-        // Estrai artista e titolo
-        const dashIndex = raw.indexOf(' - ');
-        const artist = raw.substring(0, dashIndex).trim();
-        const title = raw.substring(dashIndex + 3).trim();
+        const firstDash = raw.indexOf(' - ');
+        const artist = raw.substring(0, firstDash).trim();
+        const title = raw.substring(firstDash + 3).trim();
 
-        // Metti in attesa per 8 secondi prima di pubblicare
         if (pendingTimer) clearTimeout(pendingTimer);
         pendingMeta = { artist, title, raw };
 
@@ -144,7 +139,7 @@ Object.entries(streams).forEach(([name, url]) => {
       });
 
       res.on('end', () => {
-        console.log(`[${name}] Connessione chiusa.`);
+        console.log(`[${name}] Connessione chiusa dal server.`);
         cleanup();
         reconnectTimeout = setTimeout(() => connect(retryCount + 1), 2000);
       });
@@ -166,7 +161,6 @@ Object.entries(streams).forEach(([name, url]) => {
   connect();
 });
 
-// Endpoint metadati
 app.get('/current-meta/:station', (req, res) => {
   const { station } = req.params;
   if (!stationsMeta[station]) {
@@ -176,7 +170,6 @@ app.get('/current-meta/:station', (req, res) => {
   res.json(stationsMeta[station]);
 });
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', stations: Object.keys(stationsMeta) });
 });
@@ -185,14 +178,14 @@ app.get('/', (req, res) => res.send('Proxy attivo'));
 
 app.listen(PORT, () => console.log(`Proxy sulla porta ${PORT}`));
 
-// GC forzata ogni ora (invece di 3 ore) per contenere la memoria
+// GC forzata ogni ora
 setInterval(() => {
   console.log('GC forzata');
   if (global.gc) global.gc();
-}, 3600000); // 1 ora
+}, 3600000);
 
 // Riavvio automatico ogni 6 ore per prevenire l'esaurimento della memoria
 setTimeout(() => {
   console.log('Riavvio programmato per liberare memoria...');
-  process.exit(0); // Render riavvierà automaticamente il processo
-}, 21600000); // 6 ore
+  process.exit(0);
+}, 21600000);
