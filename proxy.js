@@ -5,7 +5,8 @@ const PORT = process.env.PORT || 3000;
 
 const streams = {
   'radio-m100': 'https://radio-m100.stream.laut.fm/radio-m100',
-  'radio-m100next': 'https://m100next.stream.laut.fm/m100next'
+  'radio-m100next': 'https://m100next.stream.laut.fm/m100next',
+  'radiorock': 'https://stream.laut.fm/radiorock'  // ← aggiunto
 };
 
 const stationsMeta = {};
